@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>作業カフェマップ</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #app { display: grid; grid-template-columns: 1fr 400px; height: 100%; }
+    #map { width: 100%; height: 100%; }
+    #side { border-left: 1px solid #eee; overflow: auto; padding: 12px; }
+    .toolbar { display:flex; gap:8px; align-items:center; position: sticky; top:0; background:#fff; padding:8px 0; z-index:2; }
+    .item { border:1px solid #eee; border-radius:12px; padding:10px; margin:10px 0; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:10px; background:#f2f2f2; font-size:12px; margin-right:6px; }
+    .btn { cursor:pointer; border:1px solid #ddd; padding:4px 8px; border-radius:8px; background:#fff; }
+    .btn:hover { background:#f7f7f7; }
+    .muted { color:#666; font-size:12px; }
+    .bar { height:6px; background:#eee; border-radius:4px; overflow:hidden; }
+    .bar>div { height:100%; background:#7db5fa; }
+    .toast { position: fixed; right: 12px; bottom: 12px; background: #333; color:#fff; padding:10px 12px; border-radius:8px; opacity:0; transition:opacity .2s; }
+    .toast.show { opacity:1; }
+    .diag { font-size:12px; color:#555; background:#fafafa; border:1px dashed #ddd; padding:8px; border-radius:8px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="side">
+    <div class="toolbar">
+      <label><input type="checkbox" id="filter-wifi"> Wi‑Fiあり</label>
+      <label><input type="checkbox" id="filter-power"> 電源あり</label>
+      <select id="radius">
+        <option value="800">0.8km</option>
+        <option value="1500" selected>1.5km</option>
+        <option value="2500">2.5km</option>
+        <option value="4000">4.0km</option>
+      </select>
+      <button class="btn" id="reload">再検索</button>
+      <button class="btn" id="tokyo">渋谷駅へ</button>
+      <a id="sheet-link" class="btn" target="_blank" style="margin-left:auto;">データシート</a>
+    </div>
+    <div id="diag" class="diag" style="display:none"></div>
+    <div id="list"></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+let map, markers = [], places = [];
+let myPos = null;
+let clientId = null;
+
+function getClientId(){
+  try{ const k='cafemap_client_id'; let v=localStorage.getItem(k); if(!v){ v=Math.random().toString(36).slice(2)+Date.now().toString(36); localStorage.setItem(k,v);} return v; }catch(e){ return 'anon'; }
+}
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 1800); }
+
+function initMap(lat, lng) {
+  map = L.map('map').setView([lat, lng], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors' }).addTo(map);
+  L.marker([lat, lng], { title: '現在地' }).addTo(map).bindPopup('現在地');
+}
+
+function applyFilters(list) {
+  const needWifi = document.getElementById('filter-wifi').checked;
+  const needPower = document.getElementById('filter-power').checked;
+  return list.filter(p => {
+    const a = p.attrs || {};
+    const wifiOk = !needWifi || a.wifi === 'yes' || (a.wifi_yes||0) > (a.wifi_no||0);
+    const powerOk = !needPower || a.power === 'yes' || (a.power_yes||0) > (a.power_no||0);
+    return wifiOk && powerOk;
+  });
+}
+
+function ratioBar(yes, no){
+  const total = (yes||0)+(no||0); const pct = total ? Math.round((yes||0)*100/total):0;
+  return `<div class="bar"><div style="width:${pct}%"></div></div><div class="muted">Yes ${yes||0} / No ${no||0}（${pct}%）</div>`;
+}
+
+function render(diagMsg){
+  if (diagMsg){ const d=document.getElementById('diag'); d.style.display='block'; d.textContent=diagMsg; }
+  // markers
+  markers.forEach(m => m.remove()); markers=[];
+  const filtered = applyFilters(places);
+  filtered.forEach(p => {
+    const m=L.marker([p.lat,p.lng]).addTo(map);
+    const a=p.attrs||{};
+    const openStr=(p.open_now===true)?'営業中':(p.open_now===false?'営業時間外':'');
+    const wifi=a.wifi || (a.wifi_yes> a.wifi_no?'yes':(a.wifi_no> a.wifi_yes?'no':'unknown'));
+    const power=a.power || (a.power_yes> a.power_no?'yes':(a.power_no> a.power_yes?'no':'unknown'));
+    const html=`<div style="min-width:240px">
+      <strong>${p.name}</strong><br/>
+      <small>${p.address||''}</small><br/>
+      ${openStr?`<span class='badge'>${openStr}</span>`:''}
+      <div style="margin-top:8px">
+        <div>Wi‑Fi: <strong>${wifi}</strong></div>
+        ${ratioBar(a.wifi_yes,a.wifi_no)}
+        <div style="margin-top:6px">
+          <button class='btn' onclick="vote('${p.place_id}','${p.name}','wifi',true,this)">ある</button>
+          <button class='btn' onclick="vote('${p.place_id}','${p.name}','wifi',false,this)">ない</button>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div>電源: <strong>${power}</strong></div>
+        ${ratioBar(a.power_yes,a.power_no)}
+        <div style="margin-top:6px">
+          <button class='btn' onclick="vote('${p.place_id}','${p.name}','power',true,this)">ある</button>
+          <button class='btn' onclick="vote('${p.place_id}','${p.name}','power',false,this)">ない</button>
+        </div>
+      </div>
+    </div>`;
+    m.bindPopup(html); markers.push(m);
+  });
+
+  const listEl=document.getElementById('list'); listEl.innerHTML='';
+  filtered.sort((a,b)=> (distance(a,myPos)-distance(b,myPos)));
+  filtered.forEach(p=>{
+    const a=p.attrs||{};
+    const wifi=a.wifi||(a.wifi_yes>a.wifi_no?'yes':(a.wifi_no>a.wifi_yes?'no':'unknown'));
+    const power=a.power||(a.power_yes>a.power_no?'yes':(a.power_no>a.power_yes?'no':'unknown'));
+    const div=document.createElement('div'); div.className='item';
+    div.innerHTML=`<div style='display:flex; justify-content:space-between; gap:8px;'>
+      <div>
+        <div style='font-weight:600'>${p.name}</div>
+        <div style='font-size:12px; color:#555'>${p.address||''}</div>
+        <div style='margin-top:6px'>
+          <span class='badge'>Wi‑Fi: ${wifi}</span>
+          <span class='badge'>電源: ${power}</span>
+          ${p.open_now!==null?`<span class='badge'>${p.open_now?'営業中':'営業時間外'}</span>`:''}
+        </div>
+        <div style='margin-top:8px'>
+          <div class='muted'>Wi‑Fi 投票</div>
+          ${ratioBar(a.wifi_yes,a.wifi_no)}
+          <div style='margin-top:6px'>
+            <button class='btn' onclick="vote('${p.place_id}','${p.name}','wifi',true,this)">ある</button>
+            <button class='btn' onclick="vote('${p.place_id}','${p.name}','wifi',false,this)">ない</button>
+          </div>
+          <div style='margin-top:8px'>
+            <div class='muted'>電源 投票</div>
+            ${ratioBar(a.power_yes,a.power_no)}
+            <div style='margin-top:6px'>
+              <button class='btn' onclick="vote('${p.place_id}','${p.name}','power',true,this)">ある</button>
+              <button class='btn' onclick="vote('${p.place_id}','${p.name}','power',false,this)">ない</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style='display:flex; flex-direction:column; gap:6px;'>
+        <button class='btn' onclick="panTo(${p.lat},${p.lng})">地図</button>
+        <a class='btn' href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name)}" target="_blank">Google地図</a>
+      </div>
+    </div>`;
+    listEl.appendChild(div);
+  });
+}
+
+function panTo(lat,lng){ map.setView([lat,lng],17); }
+
+function vote(place_id,name,attr,value,btn){
+  if(btn){ btn.disabled=true; setTimeout(()=>btn.disabled=false,1500); }
+  const payload={ clientId, place_id, name, attr, value };
+  google.script.run.withSuccessHandler(res=>{
+    if(!res || res.ok===false){ toast(res && res.reason ? res.reason : '投票できませんでした'); return; }
+    places = places.map(p => p.place_id===place_id ? ({...p, attrs: res.attrs}) : p);
+    render(); toast('投票を反映しました');
+  }).withFailureHandler(err=>{ toast('保存エラー: '+(err?.message||err)); }).submitAttr(payload);
+}
+
+function distance(p,origin){ if(!origin) return Infinity; const R=6371e3; const φ1=p.lat*Math.PI/180, φ2=origin.lat*Math.PI/180; const dφ=(p.lat-origin.lat)*Math.PI/180; const dλ=(p.lng-origin.lng)*Math.PI/180; const a=Math.sin(dφ/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(dλ/2)**2; const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)); return R*c; }
+
+function fetchPlaces(){
+  const r=Number(document.getElementById('radius').value||1500);
+  google.script.run.withSuccessHandler(data=>{
+    const diag = (data && data.length && data[0] && data[0].place_id==='diagnostic') ? data.shift().name : '';
+    places = (data||[]).filter(p => p.lat && p.lng);
+    render(diag);
+    if(!places.length) toast('周辺にスポットが見つかりません（半径を広げてみてください）');
+  }).withFailureHandler(err=>{ render('検索エラー: '+(err?.message||err)); toast('検索エラー'); })
+  .searchPlaces(myPos.lat, myPos.lng, r);
+}
+
+function setSheetLink(){ google.script.run.withSuccessHandler(url=>{ const a=document.getElementById('sheet-link'); if(url) a.href=url; else a.remove(); }).getSheetUrl(); }
+
+function start(){
+  clientId = getClientId(); setSheetLink();
+  if (!navigator.geolocation) { toast('位置情報が取得できません。ブラウザ設定を確認してください'); return; }
+  navigator.geolocation.getCurrentPosition(pos=>{
+    myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    initMap(myPos.lat, myPos.lng); fetchPlaces();
+  }, err=>{ toast('現在地の取得に失敗しました（許可してください）'); // デモ地点（渋谷）にフォールバック
+    myPos = { lat:35.6595, lng:139.7005 }; initMap(myPos.lat, myPos.lng); fetchPlaces();
+  }, { enableHighAccuracy:true, timeout:10000 });
+}
+
+// UI events
+['filter-wifi','filter-power'].forEach(id=> document.getElementById(id).addEventListener('change', ()=>render()));
+document.getElementById('reload').addEventListener('click', fetchPlaces);
+document.getElementById('tokyo').addEventListener('click', ()=>{ myPos={lat:35.6595,lng:139.7005}; map.setView([myPos.lat,myPos.lng],15); fetchPlaces(); });
+
+window.onload = start;
+</script>
+</body>
+</html>
