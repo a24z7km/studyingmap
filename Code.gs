@@ -17,6 +17,10 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function setSheetIdManually() {
+  PropertiesService.getScriptProperties().setProperty('0', '1wslhCtY5nrvC9jPSqMWW99RdoJ6vNjEwgXVWQUA7tJw');
+}
+
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
