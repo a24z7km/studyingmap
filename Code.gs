@@ -207,7 +207,10 @@ function submitAttr(payload) {
     const row = data[idx];
     if (payload.attr === 'wifi') { row[2] = toBoolText(payload.value); row[5] = Number(row[5]||0) + (payload.value?1:0); row[6] = Number(row[6]||0) + (!payload.value?1:0); }
     else { row[3] = toBoolText(payload.value); row[7] = Number(row[7]||0) + (payload.value?1:0); row[8] = Number(row[8]||0) + (!payload.value?1:0); }
-    row[4] = now; attrs.getRange(idx + 2, 1, 1, row.length).setValues([row]);
+    row[4] = now;
+    const sheetCols = attrs.getLastColumn();
+    const fixedRow = row.slice(0, sheetCols);
+    attrs.getRange(idx + 2, 1, 1, sheetCols).setValues([fixedRow]);
   }
 
   const updated = getAttrs([payload.place_id])[payload.place_id] || null;
